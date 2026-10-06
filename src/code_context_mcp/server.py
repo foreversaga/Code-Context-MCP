@@ -34,58 +34,64 @@ def configure_service(service: CodeContextService) -> None:
     _service = service
 
 
+def _call(method: str, *args, **kwargs):
+    service = get_service()
+    with service.lock:
+        return getattr(service, method)(*args, **kwargs)
+
+
 @mcp.tool()
 def register_project(path: str, project_id: str | None = None):
     """Register a local repository path and return its stable project id."""
-    return get_service().register_project(path, project_id)
+    return _call("register_project", path, project_id)
 
 
 @mcp.tool()
 def list_projects():
     """List registered code projects."""
-    return get_service().list_projects()
+    return _call("list_projects")
 
 
 @mcp.tool()
 def index_project(project_id: str, force: bool = False):
     """Incrementally index a registered project. Set force=true for a full rebuild."""
-    return get_service().index_project(project_id, force)
+    return _call("index_project", project_id, force)
 
 
 @mcp.tool()
 def search_code(project_id: str, query: str, limit: int = 10):
     """Hybrid semantic + lexical code search for concepts, behavior, or implementation locations."""
-    return get_service().search_code(project_id, query, limit)
+    return _call("search_code", project_id, query, limit)
 
 
 @mcp.tool()
 def search_text(project_id: str, query: str, limit: int = 10):
     """Lexical full-text search, best for exact identifiers, error messages, and config values."""
-    return get_service().search_text(project_id, query, limit)
+    return _call("search_text", project_id, query, limit)
 
 
 @mcp.tool()
 def find_symbol(project_id: str, symbol: str, limit: int = 20):
     """Find function, method, class, interface, or other indexed symbols."""
-    return get_service().find_symbol(project_id, symbol, limit)
+    return _call("find_symbol", project_id, symbol, limit)
 
 
 @mcp.tool()
 def find_references(project_id: str, symbol: str, limit: int = 30):
     """Find indexed code chunks that reference a symbol."""
-    return get_service().find_references(project_id, symbol, limit)
+    return _call("find_references", project_id, symbol, limit)
 
 
 @mcp.tool()
 def get_chunk(chunk_id: int):
     """Read one indexed code chunk by id."""
-    return get_service().get_chunk(chunk_id)
+    return _call("get_chunk", chunk_id)
 
 
 @mcp.tool()
 def get_index_status(project_id: str):
     """Return index statistics for one project."""
-    return get_service().get_index_status(project_id)
+    return _call("get_index_status", project_id)
 
 
 def main() -> None:
