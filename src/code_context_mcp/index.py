@@ -43,7 +43,8 @@ class CodeContextService:
         self.home.mkdir(parents=True, exist_ok=True)
         self.embedder = embedder
         self.chunker = chunker or CodeChunker()
-        self.lock = threading.RLock()\n        self.db = sqlite3.connect(self.home / "index.sqlite3", check_same_thread=False)
+        self.lock = threading.RLock()
+        self.db = sqlite3.connect(self.home / "index.sqlite3", check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self._init_schema()
 
