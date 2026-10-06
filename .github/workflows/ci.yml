@@ -28,3 +28,22 @@ jobs:
         env:
           CODE_CONTEXT_EMBEDDER: hash
         run: pytest --cov=code_context_mcp --cov-report=term-missing
+
+  embedding-import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install embedding dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[embedding]"
+      - name: Import the default model processor without downloading weights
+        run: |
+          python - <<'PY'
+          from sentence_transformers import SentenceTransformer
+          from transformers import EmbeddingGemma2Processor
+          PY
