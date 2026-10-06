@@ -15,32 +15,39 @@ Local-first, agent-agnostic code intelligence over MCP. One daemon and one share
 - Symbol lookup and reference search
 - No Claude/Codex/Pi-specific logic inside the server
 
-## Install
+## Quick Start
+
+Requirements: Python 3.12.
 
 ```bash
 git clone https://github.com/foreversaga/Code-Context-MCP.git
 cd Code-Context-MCP
-python -m venv .venv
+
+python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[embedding]"
-```
 
-Start:
-
-```bash
 code-context-mcp
 ```
 
-Defaults:
+Default endpoint:
 
 ```text
-MCP:        http://127.0.0.1:7438/mcp
+http://127.0.0.1:7438/mcp
+```
+
+Default configuration:
+
+```text
 Data:       ~/.code-context-mcp
 Model:      google/embeddinggemma-2
+Mode:       text/code only
 Dimensions: 256
 ```
 
-EmbeddingGemma 2 is loaded lazily. This project does not cast it to FP16.
+The model is loaded lazily and the first indexing operation may load or download it.
+
+For complete setup, client configuration, indexing, multi-project usage, and troubleshooting, see [docs/USAGE.md](docs/USAGE.md).
 
 ## MCP clients
 
@@ -52,6 +59,8 @@ claude mcp add --transport http --scope user code-context http://127.0.0.1:7438/
 
 ### Codex
 
+Add to `~/.codex/config.toml`:
+
 ```toml
 [mcp_servers.code-context]
 url = "http://127.0.0.1:7438/mcp"
@@ -59,7 +68,7 @@ url = "http://127.0.0.1:7438/mcp"
 
 ### Pi
 
-Install an MCP client extension such as `pi-codemcp`, then point it at the same server:
+Pi supports Streamable HTTP MCP natively. Add to `~/.pi/agent/mcp.json`:
 
 ```json
 {
@@ -71,6 +80,16 @@ Install an MCP client extension such as `pi-codemcp`, then point it at the same 
   }
 }
 ```
+
+## First project
+
+After connecting the MCP server, ask the coding agent:
+
+```text
+Register the current repository as backend and index it with Code Context MCP.
+```
+
+The server will register the project and build its code index. Later indexing runs only process changed files unless `force=true` is used.
 
 ## Tools
 
@@ -84,12 +103,12 @@ Install an MCP client extension such as `pi-codemcp`, then point it at the same 
 - `get_chunk(chunk_id)`
 - `get_index_status(project_id)`
 
-Recommended agent behavior:
+Recommended behavior:
 
 1. Use `find_symbol` or `search_text` for exact identifiers.
 2. Use `search_code` for concepts or behavior.
-3. Read the returned chunk before editing source.
-4. Use `find_references` when a change may affect callers.
+3. Use `find_references` before changing shared symbols.
+4. Read the returned source before editing.
 
 ## Configuration
 
@@ -101,7 +120,7 @@ export CODE_CONTEXT_HOST=127.0.0.1
 export CODE_CONTEXT_PORT=7438
 ```
 
-For tests and smoke checks without downloading a model:
+For tests and smoke checks without loading EmbeddingGemma 2:
 
 ```bash
 export CODE_CONTEXT_EMBEDDER=hash
@@ -110,16 +129,16 @@ export CODE_CONTEXT_EMBEDDER=hash
 ## Architecture
 
 ```text
-Claude Code ─┐
-Codex ───────┼─ MCP Streamable HTTP ── Code Context MCP
-Pi ──────────┘                              │
-                                           ├─ Tree-sitter AST
-                                           ├─ EmbeddingGemma 2
-                                           ├─ SQLite FTS5
-                                           ├─ Symbol/reference index
-                                           └─ Incremental project index
+Claude Code --+
+Codex --------+--> MCP Streamable HTTP --> Code Context MCP
+Pi -----------+                              |
+                                             +-- Tree-sitter AST
+                                             +-- EmbeddingGemma 2
+                                             +-- SQLite FTS5
+                                             +-- symbol/reference index
+                                             +-- incremental multi-project index
 ```
 
 ## CI
 
-GitHub Actions runs lint and tests on Python 3.11 and 3.12. CI intentionally uses a deterministic fake embedder so tests validate the indexing/search/MCP workflow without downloading model weights.
+GitHub Actions runs lint and tests on Python 3.12. CI intentionally uses a deterministic fake embedder so the indexing/search/MCP workflow is tested without downloading model weights.
