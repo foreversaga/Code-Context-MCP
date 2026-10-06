@@ -46,11 +46,19 @@ class HashEmbedder:
 class EmbeddingGemma2Embedder:
     """Lazy SentenceTransformers adapter for Google's EmbeddingGemma 2 text/code backbone."""
 
-    def __init__(self, model_id: str = "google/embeddinggemma-2", dimensions: int = 256) -> None:
+    def __init__(
+        self,
+        model_id: str = "google/embeddinggemma-2",
+        dimensions: int = 256,
+        batch_size: int = 4,
+    ) -> None:
         if dimensions not in (128, 256, 512, 768):
             raise ValueError("EmbeddingGemma 2 dimensions must be 128, 256, 512, or 768")
+        if batch_size < 1:
+            raise ValueError("batch_size must be at least 1")
         self.model_id = model_id
         self.dimensions = dimensions
+        self.batch_size = batch_size
         self._model = None
 
     def _load(self):
@@ -78,13 +86,19 @@ class EmbeddingGemma2Embedder:
             prompt_name="CodeRetrieval",
             normalize_embeddings=True,
             convert_to_numpy=True,
+            batch_size=1,
         )
         return self._convert(rows[0])
 
     def embed_documents(self, items: Sequence[tuple[str, str]]) -> list[list[float]]:
         model = self._load()
         payload = [f"title: {title or 'none'} | text: {content}" for title, content in items]
-        rows = model.encode(payload, normalize_embeddings=True, convert_to_numpy=True)
+        rows = model.encode(
+            payload,
+            normalize_embeddings=True,
+            convert_to_numpy=True,
+            batch_size=self.batch_size,
+        )
         return [self._convert(row) for row in rows]
 
 
