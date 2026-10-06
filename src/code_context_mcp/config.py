@@ -15,7 +15,7 @@ class Settings:
     port: int = 7438
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         return cls(
             home=Path(os.getenv("CODE_CONTEXT_HOME", "~/.code-context-mcp")).expanduser(),
             embedder=os.getenv("CODE_CONTEXT_EMBEDDER", "embeddinggemma2"),
