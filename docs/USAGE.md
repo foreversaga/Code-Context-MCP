@@ -20,6 +20,9 @@ source .venv/bin/activate
 pip install -e ".[embedding]"
 ```
 
+The `embedding` extra installs the model processor dependencies, including Pillow
+and torchvision. EmbeddingGemma 2 requires these even for text/code-only usage.
+
 ## 2. Start the server
 
 Run the daemon in a dedicated terminal:

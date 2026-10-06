@@ -45,6 +45,9 @@ Mode:       text/code only
 Dimensions: 256
 ```
 
+The `embedding` extra includes Pillow and torchvision, which the EmbeddingGemma 2
+processor requires even for text/code-only usage.
+
 The model is loaded lazily and the first indexing operation may load or download it.
 
 For complete setup, client configuration, indexing, multi-project usage, and troubleshooting, see [docs/USAGE.md](docs/USAGE.md).
