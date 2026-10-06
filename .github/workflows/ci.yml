@@ -44,6 +44,8 @@ jobs:
       - name: Import the default model processor without downloading weights
         run: |
           python - <<'PY'
+          from PIL import Image
+          from torchvision.transforms.v2 import functional
           from sentence_transformers import SentenceTransformer
           from transformers import EmbeddingGemma2Processor
           PY
