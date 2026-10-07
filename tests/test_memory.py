@@ -114,3 +114,20 @@ def test_sqlite_memory_pragmas_are_bounded(tmp_path: Path):
     assert service.db.execute("PRAGMA temp_store").fetchone()[0] == 1
     assert service.db.execute("PRAGMA cache_size").fetchone()[0] == -32768
     service.close()
+
+
+def test_search_results_are_capped_and_previewed(tmp_path: Path):
+    project = tmp_path / "repo"
+    project.mkdir()
+    body = "needle = 1\n" + ("x = 1\n" * 2000)
+    (project / "main.py").write_text("def large_function():\n" + body)
+
+    service = CodeContextService(tmp_path / "home", HashEmbedder(32))
+    service.register_project(str(project), "repo")
+    service.index_project("repo")
+
+    results = service.search_code("repo", "needle", limit=10_000)
+
+    assert len(results) <= 50
+    assert all(len(item["content"]) <= 2000 for item in results)
+    service.close()
