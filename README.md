@@ -43,6 +43,7 @@ Data:       ~/.code-context-mcp
 Model:      google/embeddinggemma-2
 Mode:       text/code only
 Dimensions: 256
+Device:     CPU on Apple Silicon; auto elsewhere
 ```
 
 The `embedding` extra includes Pillow and torchvision, which the EmbeddingGemma 2
@@ -98,6 +99,7 @@ The server will register the project and build its code index. Later indexing ru
 
 - `register_project(path, project_id?)`
 - `list_projects()`
+- `remove_project(project_id)`
 - `index_project(project_id, force=false)`
 - `search_code(project_id, query, limit=10)`
 - `search_text(project_id, query, limit=10)`
@@ -119,6 +121,8 @@ Recommended behavior:
 export CODE_CONTEXT_HOME=~/.code-context-mcp
 export CODE_CONTEXT_MODEL=google/embeddinggemma-2
 export CODE_CONTEXT_DIMENSIONS=256
+# Optional override. Apple Silicon defaults to CPU for memory stability.
+# export CODE_CONTEXT_DEVICE=mps
 export CODE_CONTEXT_HOST=127.0.0.1
 export CODE_CONTEXT_PORT=7438
 ```
