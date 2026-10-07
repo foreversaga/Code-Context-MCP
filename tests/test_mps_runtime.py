@@ -1,5 +1,3 @@
-import os
-
 import pytest
 
 from code_context_mcp import mps_entrypoint
