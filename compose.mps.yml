@@ -7,8 +7,9 @@ services:
     environment:
       CODE_CONTEXT_DEVICE: cuda
       NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
       CUDA_VISIBLE_DEVICES: "${CODE_CONTEXT_GPU_INDEX:-0}"
-      CUDA_MPS_PIPE_DIRECTORY: /run/nvidia-mps/codecontext/mcp
+      CUDA_MPS_PIPE_DIRECTORY: "${CODE_CONTEXT_MPS_PIPE_DIRECTORY:-/run/nvidia-mps/codecontext/mcp}"
       CODE_CONTEXT_MPS_TOKEN: "${CODE_CONTEXT_MPS_TOKEN:?Start with scripts/start-mps-v3.sh}"
       CODE_CONTEXT_TORCH_GPU_FRACTION: "${CODE_CONTEXT_TORCH_GPU_FRACTION:-0.90}"
     gpus: all
