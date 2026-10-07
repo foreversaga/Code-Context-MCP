@@ -367,16 +367,17 @@ class CodeContextService:
 
     def index_project(self, project_id: str, force: bool = False) -> dict[str, int]:
         root = self._project_root(project_id)
-        known = {
-            row["path"]: row["sha256"]
-            for row in self.db.execute(
-                "SELECT path, sha256 FROM files WHERE project_id = ?", (project_id,)
-            )
-        }
-        current: set[str] = set()
         indexed_files = 0
         indexed_chunks = 0
+        removed_files = 0
         vector_changed = False
+
+        # Track the current filesystem scan in SQLite instead of Python sets/dicts.
+        # temp_store=FILE keeps very large repository inventories off the Python heap.
+        self.db.execute(
+            "CREATE TEMP TABLE IF NOT EXISTS current_scan(path TEXT PRIMARY KEY)"
+        )
+        self.db.execute("DELETE FROM current_scan")
 
         # FAISS is a cache over the persisted embeddings. If an older installation has
         # no index yet, this does a bounded streaming rebuild once.
@@ -384,7 +385,15 @@ class CodeContextService:
 
         try:
             for path, relative_path in self._iter_files(root):
-                current.add(relative_path)
+                self.db.execute(
+                    "INSERT OR IGNORE INTO current_scan(path) VALUES (?)",
+                    (relative_path,),
+                )
+                known = self.db.execute(
+                    "SELECT sha256 FROM files WHERE project_id = ? AND path = ?",
+                    (project_id, relative_path),
+                ).fetchone()
+
                 try:
                     raw = path.read_bytes()
                 except OSError:
@@ -393,15 +402,15 @@ class CodeContextService:
                     continue
 
                 digest = _sha256(raw)
-                if not force and known.get(relative_path) == digest:
+                if not force and known is not None and known["sha256"] == digest:
                     continue
 
                 content = raw.decode("utf-8", errors="ignore")
                 chunks = self.chunker.chunk(relative_path, content)
 
                 encoded: list[tuple[object, list[float]]] = []
-                for start in range(0, len(chunks), EMBED_BATCH_CHUNKS):
-                    chunk_batch = chunks[start : start + EMBED_BATCH_CHUNKS]
+                for batch_start in range(0, len(chunks), EMBED_BATCH_CHUNKS):
+                    chunk_batch = chunks[batch_start : batch_start + EMBED_BATCH_CHUNKS]
                     embeddings = self.embedder.embed_documents(
                         [
                             (f"{relative_path}::{chunk.symbol or chunk.kind}", chunk.content)
@@ -473,26 +482,43 @@ class CodeContextService:
                 indexed_files += 1
                 indexed_chunks += len(chunks)
 
-            missing_files = set(known) - current
-            for missing in missing_files:
-                old_ids = [
-                    int(row["id"])
-                    for row in self.db.execute(
-                        "SELECT id FROM chunks WHERE project_id = ? AND path = ?",
-                        (project_id, missing),
-                    )
-                ]
-                with self.db:
-                    self._delete_file_chunks(project_id, missing)
-                    self.db.execute(
-                        "DELETE FROM files WHERE project_id = ? AND path = ?",
-                        (project_id, missing),
-                    )
-                    revision = self._bump_vector_revision(project_id)
+            # Delete disappeared/now-excluded files in bounded batches instead of
+            # materializing every missing path at once.
+            while True:
+                missing_rows = self.db.execute(
+                    """
+                    SELECT f.path
+                    FROM files f
+                    LEFT JOIN current_scan s ON s.path = f.path
+                    WHERE f.project_id = ? AND s.path IS NULL
+                    LIMIT 256
+                    """,
+                    (project_id,),
+                ).fetchall()
+                if not missing_rows:
+                    break
 
-                self.vectors.remove_ids(project_id, old_ids)
-                self.vectors.set_revision(project_id, revision)
-                vector_changed = True
+                for row in missing_rows:
+                    missing = row["path"]
+                    old_ids = [
+                        int(chunk_row["id"])
+                        for chunk_row in self.db.execute(
+                            "SELECT id FROM chunks WHERE project_id = ? AND path = ?",
+                            (project_id, missing),
+                        )
+                    ]
+                    with self.db:
+                        self._delete_file_chunks(project_id, missing)
+                        self.db.execute(
+                            "DELETE FROM files WHERE project_id = ? AND path = ?",
+                            (project_id, missing),
+                        )
+                        revision = self._bump_vector_revision(project_id)
+
+                    self.vectors.remove_ids(project_id, old_ids)
+                    self.vectors.set_revision(project_id, revision)
+                    vector_changed = True
+                    removed_files += 1
 
             if vector_changed:
                 self.vectors.save(project_id, self._vector_revision(project_id))
@@ -501,7 +527,7 @@ class CodeContextService:
             return {
                 "indexed_files": indexed_files,
                 "indexed_chunks": indexed_chunks,
-                "removed_files": len(missing_files),
+                "removed_files": removed_files,
             }
         except Exception:
             # The SQLite revision is authoritative. Discard an in-memory FAISS index
@@ -509,6 +535,8 @@ class CodeContextService:
             # it from persisted embeddings if revisions differ.
             self.vectors.invalidate(project_id)
             raise
+        finally:
+            self.db.execute("DELETE FROM current_scan")
 
     def _row_result(self, row: sqlite3.Row, score: float = 0.0) -> dict[str, Any]:
         return {
