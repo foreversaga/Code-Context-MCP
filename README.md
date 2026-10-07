@@ -55,14 +55,44 @@ The model is loaded lazily and the first indexing operation may load or download
 For complete setup, client configuration, indexing, multi-project usage, and troubleshooting, see [docs/USAGE.md](docs/USAGE.md).
 
 
-## Docker (GB10-safe)
+## Docker on GB10
 
-Docker is the recommended deployment on GB10 when host stability matters. The safe image runs embedding inference on CPU and refuses to start without a cgroup memory limit.
+For GB10 with CUDA 13.4+, use the MPS v3 GPU runtime. It applies a hard device-memory limit to the container's real cgroup before EmbeddingGemma is allowed to start.
+
+```bash
+cp .env.mps.example .env.mps
+# Edit CODE_CONTEXT_PROJECTS_ROOT in .env.mps.
+
+bash scripts/start-mps-v3.sh
+```
+
+Defaults:
+
+```text
+GPU hard limit:      4096 MiB
+GPU soft limit:      0
+PyTorch fraction:    90% of the MPS-limited visible memory
+Docker CPU memory:   8 GB
+GPU backend:         NVIDIA MPS v3 memory partitioning
+CUDA image:          nvcr.io/nvidia/pytorch:26.09-py3 (CUDA 13.4.1)
+MCP:                 127.0.0.1:7438
+```
+
+The startup script creates an MPS v3 server/namespace, starts the container behind a gate, discovers its actual Docker cgroup, applies `nvidia-smi memory-limits --hard-limit`, verifies CUDA sees the capped memory, and only then releases the MCP process.
+
+Stop with:
+
+```bash
+bash scripts/stop-mps-v3.sh
+```
+
+### CPU-only fallback
+
+Use this when the host does not provide CUDA 13.4 MPS v3 memory partitioning:
 
 ```bash
 cp .env.example .env
-# Edit CODE_CONTEXT_PROJECTS_ROOT in .env to an absolute host path, for example:
-# CODE_CONTEXT_PROJECTS_ROOT=/home/barry/projects
+# Edit CODE_CONTEXT_PROJECTS_ROOT in .env.
 
 docker compose up -d --build
 docker compose ps
@@ -85,7 +115,7 @@ MCP bind address:    127.0.0.1:7438
 
 Project source is mounted read-only at the same absolute path inside the container. Existing Claude Code, Codex, and Pi MCP configuration therefore remains unchanged.
 
-Do **not** add `--gpus all` to the safe GB10 deployment. CUDA allocations on GB10 unified memory can bypass Docker memory cgroups, so the container memory limit would no longer protect the host from GPU-side memory exhaustion.
+Do **not** add `--gpus all` to the CPU-only fallback. Use `scripts/start-mps-v3.sh` for GPU acceleration so CUDA allocations are protected by an MPS v3 device-memory hard limit.
 
 The Docker entrypoint fails closed when:
 
