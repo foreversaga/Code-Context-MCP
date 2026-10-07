@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from code_context_mcp import embedder as embedder_module
 from code_context_mcp.chunker import CodeChunker
 from code_context_mcp.embedder import EmbeddingGemma2Embedder, HashEmbedder
 from code_context_mcp.index import CodeContextService
@@ -190,3 +191,17 @@ def test_startup_cleans_orphaned_index_rows(tmp_path: Path):
     assert reopened.db.execute("SELECT count(*) FROM chunks_fts").fetchone()[0] == 0
     assert reopened.db.execute("SELECT count(*) FROM files").fetchone()[0] == 0
     reopened.close()
+
+
+def test_apple_silicon_defaults_embedding_device_to_cpu(monkeypatch):
+    monkeypatch.setattr(embedder_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(embedder_module.platform, "machine", lambda: "arm64")
+
+    assert embedder_module._safe_default_device() == "cpu"
+
+
+def test_non_apple_platform_keeps_automatic_device_selection(monkeypatch):
+    monkeypatch.setattr(embedder_module.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(embedder_module.platform, "machine", lambda: "x86_64")
+
+    assert embedder_module._safe_default_device() is None
