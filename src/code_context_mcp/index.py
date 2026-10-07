@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import heapq
 import json
 import os
 import re
@@ -13,6 +12,7 @@ from typing import Any
 
 from .chunker import CodeChunker
 from .embedder import Embedder
+from .vector_index import FaissVectorStore
 
 
 DEFAULT_EXCLUDES = {
@@ -64,17 +64,18 @@ def _bounded_text(value: str, maximum: int) -> str:
     return value[:maximum]
 
 
-def _dot_embedding(query: list[float], stored: object) -> float:
+def _unpack_embedding(stored: object) -> list[float]:
     if isinstance(stored, str):
-        values = json.loads(stored)
-        return sum(x * float(y) for x, y in zip(query, values, strict=False))
+        return [float(value) for value in json.loads(stored)]
     if isinstance(stored, memoryview):
         stored = stored.tobytes()
     if isinstance(stored, bytearray):
         stored = bytes(stored)
     if isinstance(stored, bytes):
-        values = memoryview(stored).cast("f")
-        return sum(x * float(y) for x, y in zip(query, values, strict=False))
+        if len(stored) % 4 != 0:
+            raise ValueError("Invalid float32 embedding blob length")
+        count = len(stored) // 4
+        return list(struct.unpack(f"<{count}f", stored))
     raise TypeError(f"Unsupported embedding storage type: {type(stored)!r}")
 
 
@@ -84,6 +85,7 @@ class CodeContextService:
         self.home.mkdir(parents=True, exist_ok=True)
         self.embedder = embedder
         self.chunker = chunker or CodeChunker()
+        self.vectors = FaissVectorStore(self.home / "vectors", self.embedder.dimensions)
         self.lock = threading.RLock()
         self.db = sqlite3.connect(self.home / "index.sqlite3", check_same_thread=False)
         self.db.row_factory = sqlite3.Row
@@ -119,6 +121,10 @@ class CodeContextService:
             );
             CREATE INDEX IF NOT EXISTS idx_chunks_project ON chunks(project_id);
             CREATE INDEX IF NOT EXISTS idx_chunks_symbol ON chunks(project_id, symbol);
+            CREATE TABLE IF NOT EXISTS vector_state (
+                project_id TEXT PRIMARY KEY,
+                revision INTEGER NOT NULL DEFAULT 0
+            );
             CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
                 chunk_id UNINDEXED,
                 project_id UNINDEXED,
@@ -156,8 +162,15 @@ class CodeContextService:
             WHERE project_id NOT IN (SELECT project_id FROM projects)
             """
         )
+        self.db.execute(
+            """
+            DELETE FROM vector_state
+            WHERE project_id NOT IN (SELECT project_id FROM projects)
+            """
+        )
 
     def close(self) -> None:
+        self.vectors.close()
         self.db.close()
 
     def register_project(self, path: str, project_id: str | None = None) -> dict[str, str]:
@@ -196,6 +209,10 @@ class CodeContextService:
             self.db.execute(
                 "INSERT INTO projects(project_id, root_path) VALUES (?, ?)",
                 (project_id, str(root)),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO vector_state(project_id, revision) VALUES (?, 0)",
+                (project_id,),
             )
         return {"project_id": project_id, "root_path": str(root)}
 
@@ -246,8 +263,10 @@ class CodeContextService:
             )
             self.db.execute("DELETE FROM chunks WHERE project_id = ?", (project_id,))
             self.db.execute("DELETE FROM files WHERE project_id = ?", (project_id,))
+            self.db.execute("DELETE FROM vector_state WHERE project_id = ?", (project_id,))
             self.db.execute("DELETE FROM projects WHERE project_id = ?", (project_id,))
 
+        self.vectors.delete(project_id)
         self.db.execute("PRAGMA wal_checkpoint(PASSIVE)")
         return {
             "project_id": project_id,
@@ -302,6 +321,50 @@ class CodeContextService:
             (project_id, relative_path),
         )
 
+    def _vector_revision(self, project_id: str) -> int:
+        row = self.db.execute(
+            "SELECT revision FROM vector_state WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+        if row is None:
+            with self.db:
+                self.db.execute(
+                    "INSERT INTO vector_state(project_id, revision) VALUES (?, 0)",
+                    (project_id,),
+                )
+            return 0
+        return int(row["revision"])
+
+    def _bump_vector_revision(self, project_id: str) -> int:
+        self.db.execute(
+            """
+            INSERT INTO vector_state(project_id, revision) VALUES (?, 1)
+            ON CONFLICT(project_id) DO UPDATE SET revision = revision + 1
+            """,
+            (project_id,),
+        )
+        row = self.db.execute(
+            "SELECT revision FROM vector_state WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+        return int(row["revision"])
+
+    def _iter_project_embeddings(self, project_id: str):
+        cursor = self.db.execute(
+            "SELECT id, embedding FROM chunks WHERE project_id = ? ORDER BY id",
+            (project_id,),
+        )
+        for row in cursor:
+            yield int(row["id"]), _unpack_embedding(row["embedding"])
+
+    def _ensure_vectors(self, project_id: str):
+        revision = self._vector_revision(project_id)
+        return self.vectors.ensure(
+            project_id,
+            revision,
+            self._iter_project_embeddings(project_id),
+        )
+
     def index_project(self, project_id: str, force: bool = False) -> dict[str, int]:
         root = self._project_root(project_id)
         known = {
@@ -313,100 +376,139 @@ class CodeContextService:
         current: set[str] = set()
         indexed_files = 0
         indexed_chunks = 0
+        vector_changed = False
 
-        for path, relative_path in self._iter_files(root):
-            current.add(relative_path)
-            try:
-                raw = path.read_bytes()
-            except OSError:
-                continue
-            if len(raw) > MAX_FILE_BYTES:
-                continue
+        # FAISS is a cache over the persisted embeddings. If an older installation has
+        # no index yet, this does a bounded streaming rebuild once.
+        self._ensure_vectors(project_id)
 
-            digest = _sha256(raw)
-            if not force and known.get(relative_path) == digest:
-                continue
+        try:
+            for path, relative_path in self._iter_files(root):
+                current.add(relative_path)
+                try:
+                    raw = path.read_bytes()
+                except OSError:
+                    continue
+                if len(raw) > MAX_FILE_BYTES:
+                    continue
 
-            content = raw.decode("utf-8", errors="ignore")
-            chunks = self.chunker.chunk(relative_path, content)
+                digest = _sha256(raw)
+                if not force and known.get(relative_path) == digest:
+                    continue
 
-            # Compute embeddings before touching the existing index. If model inference
-            # fails, the previous index for this file remains usable.
-            encoded: list[tuple[object, list[float]]] = []
-            for start in range(0, len(chunks), EMBED_BATCH_CHUNKS):
-                chunk_batch = chunks[start : start + EMBED_BATCH_CHUNKS]
-                embeddings = self.embedder.embed_documents(
-                    [
-                        (f"{relative_path}::{chunk.symbol or chunk.kind}", chunk.content)
-                        for chunk in chunk_batch
-                    ]
-                )
-                encoded.extend(zip(chunk_batch, embeddings, strict=True))
+                content = raw.decode("utf-8", errors="ignore")
+                chunks = self.chunker.chunk(relative_path, content)
 
-            # Keep transactions file-scoped so large rebuilds do not grow one huge WAL.
-            with self.db:
-                self._delete_file_chunks(project_id, relative_path)
-                for chunk, embedding in encoded:
-                    cur = self.db.execute(
-                        """
-                        INSERT INTO chunks(
-                            project_id, path, symbol, kind, start_line, end_line,
-                            content, embedding
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            project_id,
-                            chunk.path,
-                            chunk.symbol,
-                            chunk.kind,
-                            chunk.start_line,
-                            chunk.end_line,
-                            chunk.content,
-                            sqlite3.Binary(_pack_embedding(embedding)),
-                        ),
+                encoded: list[tuple[object, list[float]]] = []
+                for start in range(0, len(chunks), EMBED_BATCH_CHUNKS):
+                    chunk_batch = chunks[start : start + EMBED_BATCH_CHUNKS]
+                    embeddings = self.embedder.embed_documents(
+                        [
+                            (f"{relative_path}::{chunk.symbol or chunk.kind}", chunk.content)
+                            for chunk in chunk_batch
+                        ]
                     )
-                    chunk_id = cur.lastrowid
+                    encoded.extend(zip(chunk_batch, embeddings, strict=True))
+
+                old_ids = [
+                    int(row["id"])
+                    for row in self.db.execute(
+                        "SELECT id FROM chunks WHERE project_id = ? AND path = ?",
+                        (project_id, relative_path),
+                    )
+                ]
+                new_ids: list[int] = []
+                new_vectors: list[list[float]] = []
+
+                with self.db:
+                    self._delete_file_chunks(project_id, relative_path)
+                    for chunk, embedding in encoded:
+                        cur = self.db.execute(
+                            """
+                            INSERT INTO chunks(
+                                project_id, path, symbol, kind, start_line, end_line,
+                                content, embedding
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                project_id,
+                                chunk.path,
+                                chunk.symbol,
+                                chunk.kind,
+                                chunk.start_line,
+                                chunk.end_line,
+                                chunk.content,
+                                sqlite3.Binary(_pack_embedding(embedding)),
+                            ),
+                        )
+                        chunk_id = int(cur.lastrowid)
+                        new_ids.append(chunk_id)
+                        new_vectors.append(embedding)
+                        self.db.execute(
+                            """
+                            INSERT INTO chunks_fts(chunk_id, project_id, path, symbol, content)
+                            VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (
+                                str(chunk_id),
+                                project_id,
+                                chunk.path,
+                                chunk.symbol or "",
+                                chunk.content,
+                            ),
+                        )
                     self.db.execute(
                         """
-                        INSERT INTO chunks_fts(chunk_id, project_id, path, symbol, content)
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT INTO files(project_id, path, sha256) VALUES (?, ?, ?)
+                        ON CONFLICT(project_id, path) DO UPDATE SET sha256 = excluded.sha256
                         """,
-                        (
-                            str(chunk_id),
-                            project_id,
-                            chunk.path,
-                            chunk.symbol or "",
-                            chunk.content,
-                        ),
+                        (project_id, relative_path, digest),
                     )
-                self.db.execute(
-                    """
-                    INSERT INTO files(project_id, path, sha256) VALUES (?, ?, ?)
-                    ON CONFLICT(project_id, path) DO UPDATE SET sha256 = excluded.sha256
-                    """,
-                    (project_id, relative_path, digest),
-                )
+                    revision = self._bump_vector_revision(project_id)
 
-            indexed_files += 1
-            indexed_chunks += len(chunks)
+                self.vectors.remove_ids(project_id, old_ids)
+                self.vectors.add(project_id, new_ids, new_vectors)
+                self.vectors.set_revision(project_id, revision)
+                vector_changed = True
+                indexed_files += 1
+                indexed_chunks += len(chunks)
 
-        missing_files = set(known) - current
-        for missing in missing_files:
-            with self.db:
-                self._delete_file_chunks(project_id, missing)
-                self.db.execute(
-                    "DELETE FROM files WHERE project_id = ? AND path = ?",
-                    (project_id, missing),
-                )
+            missing_files = set(known) - current
+            for missing in missing_files:
+                old_ids = [
+                    int(row["id"])
+                    for row in self.db.execute(
+                        "SELECT id FROM chunks WHERE project_id = ? AND path = ?",
+                        (project_id, missing),
+                    )
+                ]
+                with self.db:
+                    self._delete_file_chunks(project_id, missing)
+                    self.db.execute(
+                        "DELETE FROM files WHERE project_id = ? AND path = ?",
+                        (project_id, missing),
+                    )
+                    revision = self._bump_vector_revision(project_id)
 
-        # Keep the WAL bounded after a large indexing pass.
-        self.db.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                self.vectors.remove_ids(project_id, old_ids)
+                self.vectors.set_revision(project_id, revision)
+                vector_changed = True
 
-        return {
-            "indexed_files": indexed_files,
-            "indexed_chunks": indexed_chunks,
-            "removed_files": len(missing_files),
-        }
+            if vector_changed:
+                self.vectors.save(project_id, self._vector_revision(project_id))
+
+            self.db.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            return {
+                "indexed_files": indexed_files,
+                "indexed_chunks": indexed_chunks,
+                "removed_files": len(missing_files),
+            }
+        except Exception:
+            # The SQLite revision is authoritative. Discard an in-memory FAISS index
+            # that may have been only partially updated; the next access will rebuild
+            # it from persisted embeddings if revisions differ.
+            self.vectors.invalidate(project_id)
+            raise
 
     def _row_result(self, row: sqlite3.Row, score: float = 0.0) -> dict[str, Any]:
         return {
@@ -424,44 +526,20 @@ class CodeContextService:
         if limit <= 0:
             return []
 
+        self._ensure_vectors(project_id)
         query_vec = self.embedder.embed_query(query)
-        top: list[tuple[float, int, str, str | None, str, int, int]] = []
-
-        cursor = self.db.execute(
-            """
-            SELECT id, path, symbol, kind, start_line, end_line, embedding
-            FROM chunks
-            WHERE project_id = ?
-            """,
-            (project_id,),
-        )
-        for row in cursor:
-            score = _dot_embedding(query_vec, row["embedding"])
-            candidate = (
-                score,
-                int(row["id"]),
-                row["path"],
-                row["symbol"],
-                row["kind"],
-                int(row["start_line"]),
-                int(row["end_line"]),
-            )
-            if len(top) < limit:
-                heapq.heappush(top, candidate)
-            elif candidate[:2] > top[0][:2]:
-                heapq.heapreplace(top, candidate)
-
-        ranked = sorted(top, reverse=True)
-        ids = [item[1] for item in ranked]
+        hits = self.vectors.search(project_id, query_vec, limit)
+        ids = [chunk_id for chunk_id, _ in hits]
         if not ids:
             return []
 
         placeholders = ",".join("?" for _ in ids)
-        contents = {
-            int(row["id"]): row["content"]
+        rows = {
+            int(row["id"]): row
             for row in self.db.execute(
                 f"""
-                SELECT id, substr(content, 1, ?) AS content
+                SELECT id, path, symbol, kind, start_line, end_line,
+                       substr(content, 1, ?) AS content
                 FROM chunks
                 WHERE id IN ({placeholders})
                 """,
@@ -469,19 +547,12 @@ class CodeContextService:
             )
         }
 
-        return [
-            {
-                "chunk_id": chunk_id,
-                "path": path,
-                "symbol": symbol,
-                "kind": kind,
-                "start_line": start_line,
-                "end_line": end_line,
-                "content": contents[chunk_id],
-                "score": score,
-            }
-            for score, chunk_id, path, symbol, kind, start_line, end_line in ranked
-        ]
+        results = []
+        for chunk_id, score in hits:
+            row = rows.get(chunk_id)
+            if row is not None:
+                results.append(self._row_result(row, score))
+        return results
 
     def _fts_query(self, query: str) -> str | None:
         tokens = re.findall(r"[A-Za-z0-9_]+", query)
@@ -613,4 +684,6 @@ class CodeContextService:
             "files": files,
             "chunks": chunks,
             "embedding_dimensions": self.embedder.dimensions,
+            "vector_backend": "faiss",
+            "vector_revision": self._vector_revision(project_id),
         }
