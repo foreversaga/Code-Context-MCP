@@ -53,6 +53,12 @@ def list_projects():
 
 
 @mcp.tool()
+def remove_project(project_id: str):
+    """Remove a project and delete all of its persisted chunks, embeddings, and FTS data."""
+    return _call("remove_project", project_id)
+
+
+@mcp.tool()
 def index_project(project_id: str, force: bool = False):
     """Incrementally index a registered project. Set force=true for a full rebuild."""
     return _call("index_project", project_id, force)
