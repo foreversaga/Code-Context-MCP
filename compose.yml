@@ -1,0 +1,48 @@
+services:
+  code-context-mcp:
+    build:
+      context: .
+      args:
+        INSTALL_EMBEDDING: "1"
+    image: code-context-mcp:local
+    init: true
+    environment:
+      CODE_CONTEXT_HOME: /data
+      CODE_CONTEXT_HOST: 0.0.0.0
+      CODE_CONTEXT_PORT: "7438"
+      CODE_CONTEXT_DEVICE: cpu
+      CUDA_VISIBLE_DEVICES: ""
+      TOKENIZERS_PARALLELISM: "false"
+      OMP_NUM_THREADS: "${CODE_CONTEXT_CPU_THREADS:-4}"
+      OPENBLAS_NUM_THREADS: "${CODE_CONTEXT_CPU_THREADS:-4}"
+      MKL_NUM_THREADS: "${CODE_CONTEXT_CPU_THREADS:-4}"
+      MALLOC_ARENA_MAX: "2"
+      HF_HOME: /cache/huggingface
+      HF_TOKEN: "${HF_TOKEN:-}"
+    ports:
+      - "127.0.0.1:${CODE_CONTEXT_PORT:-7438}:7438"
+    volumes:
+      - code-context-data:/data
+      - code-context-hf:/cache/huggingface
+      - type: bind
+        source: "${CODE_CONTEXT_PROJECTS_ROOT:?Set CODE_CONTEXT_PROJECTS_ROOT to an absolute host directory}"
+        target: "${CODE_CONTEXT_PROJECTS_ROOT:?Set CODE_CONTEXT_PROJECTS_ROOT to an absolute host directory}"
+        read_only: true
+    mem_limit: "${CODE_CONTEXT_MEMORY_LIMIT:-8g}"
+    mem_reservation: "${CODE_CONTEXT_MEMORY_RESERVATION:-2g}"
+    memswap_limit: "${CODE_CONTEXT_MEMORY_LIMIT:-8g}"
+    cpus: "${CODE_CONTEXT_CPU_LIMIT:-4.0}"
+    pids_limit: 256
+    shm_size: "256m"
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 10s
+
+volumes:
+  code-context-data:
+  code-context-hf:
