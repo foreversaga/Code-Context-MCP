@@ -63,8 +63,8 @@ jobs:
           grep -q "mem_limit" /tmp/compose.yml
           grep -q "memswap_limit" /tmp/compose.yml
           grep -q "127.0.0.1" /tmp/compose.yml
-      - name: Build smoke image
-        run: docker build --build-arg INSTALL_EMBEDDING=0 -t code-context-mcp:ci .
+      - name: Build production image
+        run: docker build -t code-context-mcp:ci .
       - name: Run bounded smoke container
         run: |
           docker run -d --name code-context-mcp-ci \
