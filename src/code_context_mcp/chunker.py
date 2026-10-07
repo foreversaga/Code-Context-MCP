@@ -86,7 +86,7 @@ class CodeChunker:
         self,
         fallback_lines: int = 80,
         overlap: int = 10,
-        max_chunk_chars: int = 24_000,
+        max_chunk_chars: int = 8_000,
     ) -> None:
         self.fallback_lines = fallback_lines
         self.overlap = overlap
@@ -179,6 +179,7 @@ class CodeChunker:
 
         result: list[CodeChunk] = []
         offset = 0
+        line_offset = 0
         while offset < len(content):
             end = min(len(content), offset + self.max_chunk_chars)
             if end < len(content):
@@ -186,17 +187,18 @@ class CodeChunker:
                 if newline > offset:
                     end = newline + 1
             part = content[offset:end]
-            line_offset = content[:offset].count("\n")
+            part_lines = part.count("\n")
             result.append(
                 CodeChunk(
                     path=path,
                     symbol=symbol,
                     kind=f"{kind}_part",
                     start_line=start_line + line_offset,
-                    end_line=start_line + line_offset + part.count("\n"),
+                    end_line=start_line + line_offset + part_lines,
                     content=part,
                 )
             )
+            line_offset += part_lines
             offset = end
         return result
 
