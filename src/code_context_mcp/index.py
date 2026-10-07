@@ -524,6 +524,9 @@ class CodeContextService:
             if vector_changed:
                 self.vectors.save(project_id, self._vector_revision(project_id))
 
+            # current_scan writes use the same SQLite connection; finish that
+            # transaction before asking WAL to checkpoint.
+            self.db.commit()
             self.db.execute("PRAGMA wal_checkpoint(PASSIVE)")
             return {
                 "indexed_files": indexed_files,
@@ -538,6 +541,7 @@ class CodeContextService:
             raise
         finally:
             self.db.execute("DELETE FROM current_scan")
+            self.db.commit()
 
     def _row_result(self, row: sqlite3.Row, score: float = 0.0) -> dict[str, Any]:
         return {
