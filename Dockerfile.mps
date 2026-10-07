@@ -14,7 +14,10 @@ ENV PYTHONUNBUFFERED=1 \
     MALLOC_ARENA_MAX=2 \
     HF_HOME=/cache/huggingface \
     XDG_CACHE_HOME=/cache/huggingface \
-    TORCH_HOME=/cache/huggingface/torch
+    TORCH_HOME=/cache/huggingface/torch \
+    CUDA_CACHE_PATH=/cache/huggingface/cuda \
+    TRITON_CACHE_DIR=/cache/huggingface/triton \
+    TORCH_EXTENSIONS_DIR=/cache/huggingface/torch_extensions
 
 WORKDIR /app
 
