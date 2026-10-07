@@ -22,6 +22,7 @@ COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
 
 RUN pip install --no-cache-dir ".[embedding]" \
+    && python -c "import torch; v=tuple(map(int, torch.version.cuda.split('.')[:2])); assert v >= (13, 4), torch.version.cuda" \
     && (getent group 10001 >/dev/null || groupadd --system --gid 10001 codecontext) \
     && (getent passwd 10001 >/dev/null || useradd --system --uid 10001 --gid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin codecontext) \
     && mkdir -p /data /cache/huggingface \
