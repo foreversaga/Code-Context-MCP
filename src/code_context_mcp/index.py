@@ -129,7 +129,33 @@ class CodeContextService:
             );
             """
         )
+        self._cleanup_orphans()
         self.db.commit()
+
+    def _cleanup_orphans(self) -> None:
+        self.db.execute(
+            """
+            DELETE FROM chunks_fts
+            WHERE chunk_id IN (
+                SELECT CAST(c.id AS TEXT)
+                FROM chunks c
+                LEFT JOIN projects p ON p.project_id = c.project_id
+                WHERE p.project_id IS NULL
+            )
+            """
+        )
+        self.db.execute(
+            """
+            DELETE FROM chunks
+            WHERE project_id NOT IN (SELECT project_id FROM projects)
+            """
+        )
+        self.db.execute(
+            """
+            DELETE FROM files
+            WHERE project_id NOT IN (SELECT project_id FROM projects)
+            """
+        )
 
     def close(self) -> None:
         self.db.close()
@@ -138,15 +164,80 @@ class CodeContextService:
         root = Path(path).expanduser().resolve()
         if not root.is_dir():
             raise ValueError(f"Project path does not exist or is not a directory: {root}")
+
+        existing_by_path = self.db.execute(
+            "SELECT project_id FROM projects WHERE root_path = ?",
+            (str(root),),
+        ).fetchone()
+        if existing_by_path is not None:
+            existing_id = existing_by_path["project_id"]
+            if project_id is None or project_id == existing_id:
+                return {"project_id": existing_id, "root_path": str(root)}
+            raise ValueError(
+                f"Project path is already registered as {existing_id!r}; "
+                "remove it before registering a new project id"
+            )
+
         if project_id is None:
             slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", root.name).strip("-").lower() or "project"
             project_id = f"{slug}-{_sha256(str(root).encode())[:8]}"
+
+        existing_by_id = self.db.execute(
+            "SELECT root_path FROM projects WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+        if existing_by_id is not None and existing_by_id["root_path"] != str(root):
+            raise ValueError(
+                f"Project id {project_id!r} is already registered for "
+                f"{existing_by_id['root_path']!r}"
+            )
+
         with self.db:
             self.db.execute(
-                "INSERT OR REPLACE INTO projects(project_id, root_path) VALUES (?, ?)",
+                "INSERT INTO projects(project_id, root_path) VALUES (?, ?)",
                 (project_id, str(root)),
             )
         return {"project_id": project_id, "root_path": str(root)}
+
+    def remove_project(self, project_id: str) -> dict[str, int | str]:
+        row = self.db.execute(
+            "SELECT project_id FROM projects WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown project: {project_id}")
+
+        chunk_count = self.db.execute(
+            "SELECT count(*) AS n FROM chunks WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()["n"]
+        file_count = self.db.execute(
+            "SELECT count(*) AS n FROM files WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()["n"]
+
+        with self.db:
+            self.db.execute(
+                """
+                DELETE FROM chunks_fts
+                WHERE chunk_id IN (
+                    SELECT CAST(id AS TEXT)
+                    FROM chunks
+                    WHERE project_id = ?
+                )
+                """,
+                (project_id,),
+            )
+            self.db.execute("DELETE FROM chunks WHERE project_id = ?", (project_id,))
+            self.db.execute("DELETE FROM files WHERE project_id = ?", (project_id,))
+            self.db.execute("DELETE FROM projects WHERE project_id = ?", (project_id,))
+
+        self.db.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        return {
+            "project_id": project_id,
+            "removed_files": int(file_count),
+            "removed_chunks": int(chunk_count),
+        }
 
     def list_projects(self) -> list[dict[str, str]]:
         rows = self.db.execute(
