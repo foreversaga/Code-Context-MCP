@@ -50,9 +50,12 @@ Default embedding configuration:
 Model:      google/embeddinggemma-2
 Mode:       text/code only
 Dimensions: 256
+Device:     CPU on Apple Silicon; auto elsewhere
 ```
 
 The model is loaded lazily. The first project indexing operation may take longer because the model must be loaded or downloaded.
+
+On Apple Silicon, embedding inference defaults to CPU. PyTorch MPS can retain memory for varying input shapes during long-running inference workloads. You can explicitly opt in to MPS with `CODE_CONTEXT_DEVICE=mps` if you want to test it on your installed PyTorch version.
 
 ## 3. Connect an MCP client
 
@@ -280,6 +283,12 @@ List registered projects with:
 list_projects
 ```
 
+Remove an unused project and its persisted chunks, embeddings, and FTS data with:
+
+```text
+remove_project(project_id="backend")
+```
+
 ## 8. Check index status
 
 Ask the agent:
@@ -309,6 +318,8 @@ Environment variables:
 export CODE_CONTEXT_HOME=~/.code-context-mcp
 export CODE_CONTEXT_MODEL=google/embeddinggemma-2
 export CODE_CONTEXT_DIMENSIONS=256
+# Optional. Apple Silicon defaults to CPU for long-running memory stability.
+# export CODE_CONTEXT_DEVICE=mps
 export CODE_CONTEXT_HOST=127.0.0.1
 export CODE_CONTEXT_PORT=7438
 ```
@@ -328,6 +339,7 @@ The hash embedder is only for testing. Do not use it for real semantic code sear
 | --- | --- |
 | `register_project` | Register a repository path |
 | `list_projects` | List registered repositories |
+| `remove_project` | Remove a project and delete its persisted index |
 | `index_project` | Incrementally index or force rebuild a project |
 | `search_code` | Hybrid semantic + lexical code search |
 | `search_text` | Exact / lexical full-text search |
