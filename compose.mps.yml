@@ -1,0 +1,19 @@
+services:
+  code-context-mcp:
+    build:
+      dockerfile: Dockerfile.mps
+      args: {}
+    image: code-context-mcp:mps-v3
+    environment:
+      CODE_CONTEXT_DEVICE: cuda
+      NVIDIA_VISIBLE_DEVICES: all
+      CUDA_VISIBLE_DEVICES: "${CODE_CONTEXT_GPU_INDEX:-0}"
+      CUDA_MPS_PIPE_DIRECTORY: /run/nvidia-mps/codecontext/mcp
+      CODE_CONTEXT_MPS_TOKEN: "${CODE_CONTEXT_MPS_TOKEN:?Start with scripts/start-mps-v3.sh}"
+      CODE_CONTEXT_TORCH_GPU_FRACTION: "${CODE_CONTEXT_TORCH_GPU_FRACTION:-0.90}"
+    gpus: all
+    volumes:
+      - type: bind
+        source: /run/nvidia-mps
+        target: /run/nvidia-mps
+        read_only: true
