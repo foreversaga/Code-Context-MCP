@@ -63,6 +63,17 @@ jobs:
           grep -q "mem_limit" /tmp/compose.yml
           grep -q "memswap_limit" /tmp/compose.yml
           grep -q "127.0.0.1" /tmp/compose.yml
+      - name: Validate MPS v3 compose and scripts
+        env:
+          CODE_CONTEXT_PROJECTS_ROOT: ${{ runner.temp }}/projects
+          CODE_CONTEXT_MPS_TOKEN: ci
+          CODE_CONTEXT_MPS_PIPE_DIRECTORY: /run/nvidia-mps/codecontext/mcp
+        run: |
+          bash -n scripts/start-mps-v3.sh scripts/stop-mps-v3.sh
+          docker compose -f compose.yml -f compose.mps.yml config >/tmp/compose-mps.yml
+          grep -q "Dockerfile.mps" /tmp/compose-mps.yml
+          grep -q "CUDA_MPS_PIPE_DIRECTORY" /tmp/compose-mps.yml
+          grep -q "NVIDIA_VISIBLE_DEVICES" /tmp/compose-mps.yml
       - name: Build production image
         run: docker build -t code-context-mcp:ci .
       - name: Run bounded smoke container

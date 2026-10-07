@@ -59,7 +59,92 @@ On Apple Silicon, embedding inference defaults to CPU. PyTorch MPS can retain me
 
 
 
-## 2A. Docker deployment on GB10
+## 2A. GPU Docker with MPS v3 Memory Partitioning
+
+This is the recommended GB10 mode when the host provides CUDA 13.4+ and `nvidia-smi memory-limits`.
+
+Requirements:
+
+- Linux cgroup v2 mounted at `/sys/fs/cgroup`
+- CUDA 13.4 or newer
+- NVIDIA MPS v3
+- non-MIG GPU
+- Docker + NVIDIA Container Toolkit
+
+Create the environment file:
+
+```bash
+cp .env.mps.example .env.mps
+```
+
+Set the project root:
+
+```text
+CODE_CONTEXT_PROJECTS_ROOT=/home/barry/projects
+```
+
+Default GPU limit:
+
+```text
+CODE_CONTEXT_MPS_HARD_LIMIT_MIB=4096
+CODE_CONTEXT_MPS_SOFT_LIMIT_MIB=0
+CODE_CONTEXT_GPU_INDEX=0
+CODE_CONTEXT_TORCH_GPU_FRACTION=0.90
+```
+
+Start:
+
+```bash
+bash scripts/start-mps-v3.sh
+```
+
+The script performs this sequence:
+
+```text
+MPS v3 daemon
+    ↓
+codecontext server (UID 10001)
+    ↓
+mcp namespace
+    ↓
+Docker container starts behind gate
+    ↓
+discover real Docker leaf cgroup
+    ↓
+nvidia-smi memory-limits --set
+    hard = 4096 MiB
+    soft = 0
+    ↓
+read back limit
+    ↓
+torch.cuda.mem_get_info() must report capped total
+    ↓
+release MCP startup gate
+```
+
+The MPS namespace also receives the same pinned-memory ceiling as a second guardrail. The cgroup hard limit is the authoritative container-wide limit.
+
+Stop:
+
+```bash
+bash scripts/stop-mps-v3.sh
+```
+
+The stop script resets the soft reservation before Docker removes the cgroup leaf, then removes the dedicated MPS server.
+
+The GPU image uses:
+
+```text
+nvcr.io/nvidia/pytorch:26.09-py3
+Python 3.12
+CUDA 13.4.1
+```
+
+The image build fails if its PyTorch CUDA runtime is older than 13.4.
+
+Important limitation: CUDA managed/UVM allocations have different accounting behavior under MPS v3 memory partitioning. EmbeddingGemma's normal PyTorch CUDA allocator path is additionally constrained with `torch.cuda.memory.set_per_process_memory_fraction()`.
+
+## 2B. CPU-only Docker fallback on GB10
 
 For a DGX Spark / GB10 host, Docker is recommended because it can place a hard cgroup limit around all CPU-side allocations from Python, FAISS, SQLite, Torch CPU inference, and filesystem cache charged to the container.
 
