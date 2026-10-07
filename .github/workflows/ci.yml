@@ -49,3 +49,58 @@ jobs:
           from sentence_transformers import SentenceTransformer
           from transformers import EmbeddingGemma2Processor
           PY
+
+  docker-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate compose config
+        env:
+          CODE_CONTEXT_PROJECTS_ROOT: ${{ runner.temp }}/projects
+        run: |
+          mkdir -p "$CODE_CONTEXT_PROJECTS_ROOT"
+          docker compose -f compose.yml config >/tmp/compose.yml
+          grep -q "mem_limit" /tmp/compose.yml
+          grep -q "memswap_limit" /tmp/compose.yml
+          grep -q "127.0.0.1" /tmp/compose.yml
+      - name: Build smoke image
+        run: docker build --build-arg INSTALL_EMBEDDING=0 -t code-context-mcp:ci .
+      - name: Run bounded smoke container
+        run: |
+          docker run -d --name code-context-mcp-ci \
+            --memory=512m \
+            --memory-swap=512m \
+            --cpus=1 \
+            --pids-limit=128 \
+            --read-only \
+            --tmpfs /tmp:rw,size=64m \
+            --tmpfs /data:rw,size=64m \
+            --tmpfs /cache/huggingface:rw,size=64m \
+            -e CODE_CONTEXT_EMBEDDER=hash \
+            -e CODE_CONTEXT_DEVICE=cpu \
+            -e CODE_CONTEXT_HOME=/data \
+            -e CODE_CONTEXT_HOST=0.0.0.0 \
+            -p 127.0.0.1:17438:7438 \
+            code-context-mcp:ci
+
+          for i in $(seq 1 30); do
+            status="$(docker inspect --format '{{.State.Health.Status}}' code-context-mcp-ci)"
+            if [ "$status" = "healthy" ]; then
+              break
+            fi
+            if [ "$status" = "unhealthy" ]; then
+              docker logs code-context-mcp-ci
+              exit 1
+            fi
+            sleep 1
+          done
+
+          test "$(docker inspect --format '{{.State.Health.Status}}' code-context-mcp-ci)" = "healthy"
+          test "$(docker inspect --format '{{.HostConfig.Memory}}' code-context-mcp-ci)" = "536870912"
+      - name: Show logs on failure
+        if: failure()
+        run: docker logs code-context-mcp-ci || true
+      - name: Cleanup
+        if: always()
+        run: docker rm -f code-context-mcp-ci >/dev/null 2>&1 || true
+
