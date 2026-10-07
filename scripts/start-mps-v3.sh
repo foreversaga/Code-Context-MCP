@@ -71,7 +71,7 @@ if ! mpsctl server list >/dev/null 2>&1; then
     nvidia-cuda-mps-control -d -p 3
 fi
 
-if mpsctl server list codecontext >/dev/null 2>&1; then
+if mpsctl server list --format=csv,noheader 2>/dev/null | grep -q '^codecontext,'; then
   mpsctl server delete codecontext --force
 fi
 
