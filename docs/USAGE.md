@@ -57,6 +57,131 @@ The model is loaded lazily. The first project indexing operation may take longer
 
 On Apple Silicon, embedding inference defaults to CPU. PyTorch MPS can retain memory for varying input shapes during long-running inference workloads. You can explicitly opt in to MPS with `CODE_CONTEXT_DEVICE=mps` if you want to test it on your installed PyTorch version.
 
+
+
+## 2A. Docker deployment on GB10
+
+For a DGX Spark / GB10 host, Docker is recommended because it can place a hard cgroup limit around all CPU-side allocations from Python, FAISS, SQLite, Torch CPU inference, and filesystem cache charged to the container.
+
+The safe configuration deliberately does **not** expose the NVIDIA GPU. This matters on GB10: CPU and GPU share unified physical memory, but CUDA allocations are not reliably constrained by Docker's memory cgroup. A container using CUDA can therefore consume unified memory beyond `--memory`.
+
+### Start with Docker Compose
+
+Create the local environment file:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and set the absolute directory containing the repositories you want to index:
+
+```text
+CODE_CONTEXT_PROJECTS_ROOT=/home/barry/projects
+```
+
+Do not use `~` in this value. Use an absolute path.
+
+Start:
+
+```bash
+docker compose up -d --build
+```
+
+Check status:
+
+```bash
+docker compose ps
+docker compose logs -f code-context-mcp
+```
+
+Stop:
+
+```bash
+docker compose down
+```
+
+The index and Hugging Face model cache are kept in named Docker volumes, so `docker compose down` does not delete them.
+
+### Default resource guardrails
+
+```text
+CODE_CONTEXT_MEMORY_LIMIT=8g
+CODE_CONTEXT_MEMORY_RESERVATION=2g
+CODE_CONTEXT_CPU_LIMIT=4.0
+CODE_CONTEXT_CPU_THREADS=4
+CODE_CONTEXT_PORT=7438
+```
+
+Compose applies:
+
+```text
+memory limit       8 GB
+memory + swap      8 GB
+CPU                4 cores
+pids               256
+shm                256 MB
+device             CPU
+GPU                not exposed
+root filesystem    read-only
+project source     read-only
+network bind       localhost only
+```
+
+Setting `memswap_limit` equal to `mem_limit` prevents the container from pushing additional anonymous memory into swap when it reaches the limit.
+
+### Fail-closed startup
+
+The Docker image checks its runtime before starting the MCP server. Unless `CODE_CONTEXT_ALLOW_UNBOUNDED=1` is explicitly set, it refuses to run when:
+
+1. no cgroup memory limit is detected
+2. `CODE_CONTEXT_DEVICE` is anything other than `cpu`
+
+This prevents an accidental plain `docker run` without `--memory`, and prevents an accidental switch to CUDA where the GB10 unified-memory allocation would bypass the cgroup limit.
+
+### Direct docker run
+
+Compose is preferred, but the equivalent safe shape is:
+
+```bash
+docker build -t code-context-mcp:local .
+
+docker run --rm \
+  --name code-context-mcp \
+  --memory=8g \
+  --memory-swap=8g \
+  --cpus=4 \
+  --pids-limit=256 \
+  --shm-size=256m \
+  --read-only \
+  --tmpfs /tmp:rw,size=256m \
+  -p 127.0.0.1:7438:7438 \
+  -v code-context-data:/data \
+  -v code-context-hf:/cache/huggingface \
+  -v /home/barry/projects:/home/barry/projects:ro \
+  code-context-mcp:local
+```
+
+Replace `/home/barry/projects` with your actual absolute projects root.
+
+### Register projects
+
+Because the host project root is mounted to the same absolute path inside the container, continue using normal absolute paths:
+
+```text
+register_project(path="/home/barry/projects/backend", project_id="backend")
+index_project(project_id="backend")
+```
+
+Claude Code, Codex, and Pi still connect to:
+
+```text
+http://127.0.0.1:7438/mcp
+```
+
+### GB10 warning
+
+Do not add `--gpus all` to this safe deployment. On GB10 unified memory, Docker's `--memory` limit does not reliably cap CUDA-side allocations. If GPU embedding is intentionally enabled, host OOM protection must be handled separately and the Docker safety guarantee no longer applies.
+
 ## 3. Connect an MCP client
 
 All clients connect to the same local endpoint.
