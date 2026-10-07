@@ -233,20 +233,21 @@ class CodeContextService:
             (project_id,),
         ).fetchone()["n"]
 
-        paths = [
-            row["path"]
-            for row in self.db.execute(
-                "SELECT path FROM files WHERE project_id = ? ORDER BY path",
+        while True:
+            rows = self.db.execute(
+                "SELECT path FROM files WHERE project_id = ? ORDER BY path LIMIT 256",
                 (project_id,),
-            )
-        ]
-        for relative_path in paths:
-            with self.db:
-                self._delete_file_chunks(project_id, relative_path)
-                self.db.execute(
-                    "DELETE FROM files WHERE project_id = ? AND path = ?",
-                    (project_id, relative_path),
-                )
+            ).fetchall()
+            if not rows:
+                break
+            for file_row in rows:
+                relative_path = file_row["path"]
+                with self.db:
+                    self._delete_file_chunks(project_id, relative_path)
+                    self.db.execute(
+                        "DELETE FROM files WHERE project_id = ? AND path = ?",
+                        (project_id, relative_path),
+                    )
 
         # Clean any legacy chunks that are not represented in files metadata.
         with self.db:
