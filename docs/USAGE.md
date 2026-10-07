@@ -50,9 +50,12 @@ Default embedding configuration:
 Model:      google/embeddinggemma-2
 Mode:       text/code only
 Dimensions: 256
+Device:     CPU on Apple Silicon; auto elsewhere
 ```
 
 The model is loaded lazily. The first project indexing operation may take longer because the model must be loaded or downloaded.
+
+On Apple Silicon, embedding inference defaults to CPU. PyTorch MPS can retain memory for varying input shapes during long-running inference workloads. You can explicitly opt in to MPS with `CODE_CONTEXT_DEVICE=mps` if you want to test it on your installed PyTorch version.
 
 ## 3. Connect an MCP client
 
@@ -280,6 +283,12 @@ List registered projects with:
 list_projects
 ```
 
+Remove an unused project and its persisted chunks, embeddings, and FTS data with:
+
+```text
+remove_project(project_id="backend")
+```
+
 ## 8. Check index status
 
 Ask the agent:
@@ -309,6 +318,8 @@ Environment variables:
 export CODE_CONTEXT_HOME=~/.code-context-mcp
 export CODE_CONTEXT_MODEL=google/embeddinggemma-2
 export CODE_CONTEXT_DIMENSIONS=256
+# Optional. Apple Silicon defaults to CPU for long-running memory stability.
+# export CODE_CONTEXT_DEVICE=mps
 export CODE_CONTEXT_HOST=127.0.0.1
 export CODE_CONTEXT_PORT=7438
 ```
@@ -328,6 +339,7 @@ The hash embedder is only for testing. Do not use it for real semantic code sear
 | --- | --- |
 | `register_project` | Register a repository path |
 | `list_projects` | List registered repositories |
+| `remove_project` | Remove a project and delete its persisted index |
 | `index_project` | Incrementally index or force rebuild a project |
 | `search_code` | Hybrid semantic + lexical code search |
 | `search_text` | Exact / lexical full-text search |
@@ -409,7 +421,24 @@ Codex --------+--> Streamable HTTP --> Code Context MCP
 Pi -----------+                         |
                                         +-- Tree-sitter AST chunks
                                         +-- EmbeddingGemma 2
-                                        +-- SQLite FTS5
+                                        +-- FAISS semantic index
+                                        +-- SQLite metadata + FTS5
                                         +-- symbol/reference index
                                         +-- incremental multi-project index
 ```
+
+
+## 13. Memory behavior
+
+Code Context MCP keeps semantic retrieval bounded for large repositories:
+
+- FAISS performs vector top-k search instead of loading/scanning all embeddings in Python.
+- Only one project's FAISS index is resident in the daemon at a time.
+- Embeddings are persisted as compact float32 BLOBs in SQLite so a FAISS cache can be rebuilt without re-embedding source code.
+- FAISS cache files include a SQLite vector revision. If indexing is interrupted and revisions differ, the cache is rebuilt by streaming persisted embeddings.
+- Repository file discovery uses a disk-backed SQLite TEMP table instead of retaining all paths/hashes in Python sets.
+- Files over 2 MB and generated dependency/build directories are excluded from indexing.
+- Embedding inference uses small batches and a 2048-token maximum sequence length.
+- Search results are capped at 50 results and 2,000-character previews. Use `get_chunk` when full indexed content is needed.
+
+At 256 dimensions, an exact float32 FAISS index uses roughly 1 KB per indexed chunk, excluding small FAISS metadata overhead. Switching between projects unloads the previous in-memory index.

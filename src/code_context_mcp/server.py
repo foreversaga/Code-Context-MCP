@@ -24,7 +24,12 @@ def get_service() -> CodeContextService:
         settings = Settings.from_env()
         _service = CodeContextService(
             settings.home,
-            build_embedder(settings.embedder, settings.model_id, settings.dimensions),
+            build_embedder(
+                settings.embedder,
+                settings.model_id,
+                settings.dimensions,
+                settings.device,
+            ),
         )
     return _service
 
@@ -50,6 +55,12 @@ def register_project(path: str, project_id: str | None = None):
 def list_projects():
     """List registered code projects."""
     return _call("list_projects")
+
+
+@mcp.tool()
+def remove_project(project_id: str):
+    """Remove a project and delete all of its persisted chunks, embeddings, and FTS data."""
+    return _call("remove_project", project_id)
 
 
 @mcp.tool()

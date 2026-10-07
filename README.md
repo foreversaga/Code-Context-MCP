@@ -11,7 +11,8 @@ Local-first, agent-agnostic code intelligence over MCP. One daemon and one share
 - EmbeddingGemma 2 text/code embeddings
 - 256-d Matryoshka vectors by default
 - SQLite persistence
-- Hybrid semantic + SQLite FTS5 retrieval
+- FAISS semantic vector search
+- Hybrid FAISS + SQLite FTS5 retrieval
 - Symbol lookup and reference search
 - No Claude/Codex/Pi-specific logic inside the server
 
@@ -43,6 +44,7 @@ Data:       ~/.code-context-mcp
 Model:      google/embeddinggemma-2
 Mode:       text/code only
 Dimensions: 256
+Device:     CPU on Apple Silicon; auto elsewhere
 ```
 
 The `embedding` extra includes Pillow and torchvision, which the EmbeddingGemma 2
@@ -98,6 +100,7 @@ The server will register the project and build its code index. Later indexing ru
 
 - `register_project(path, project_id?)`
 - `list_projects()`
+- `remove_project(project_id)`
 - `index_project(project_id, force=false)`
 - `search_code(project_id, query, limit=10)`
 - `search_text(project_id, query, limit=10)`
@@ -119,6 +122,8 @@ Recommended behavior:
 export CODE_CONTEXT_HOME=~/.code-context-mcp
 export CODE_CONTEXT_MODEL=google/embeddinggemma-2
 export CODE_CONTEXT_DIMENSIONS=256
+# Optional override. Apple Silicon defaults to CPU for memory stability.
+# export CODE_CONTEXT_DEVICE=mps
 export CODE_CONTEXT_HOST=127.0.0.1
 export CODE_CONTEXT_PORT=7438
 ```
@@ -137,7 +142,8 @@ Codex --------+--> MCP Streamable HTTP --> Code Context MCP
 Pi -----------+                              |
                                              +-- Tree-sitter AST
                                              +-- EmbeddingGemma 2
-                                             +-- SQLite FTS5
+                                             +-- FAISS (one active project in RAM)
+                                             +-- SQLite metadata + FTS5
                                              +-- symbol/reference index
                                              +-- incremental multi-project index
 ```
@@ -145,3 +151,17 @@ Pi -----------+                              |
 ## CI
 
 GitHub Actions runs lint and tests on Python 3.12. CI intentionally uses a deterministic fake embedder so the indexing/search/MCP workflow is tested without downloading model weights.
+
+
+## Memory behavior
+
+The semantic vector index uses FAISS instead of scanning every SQLite embedding in Python.
+
+- embeddings are stored as compact float32 vectors
+- only one project's FAISS index is kept resident at a time
+- repository scans use a disk-backed SQLite TEMP table instead of Python path sets
+- indexing is file-scoped and batched
+- search responses are capped and return previews; use `get_chunk` for full content
+- Apple Silicon defaults embedding inference to CPU to avoid long-running PyTorch MPS graph-cache growth
+
+Existing SQLite embeddings can rebuild a missing or stale FAISS cache without re-running the embedding model.
