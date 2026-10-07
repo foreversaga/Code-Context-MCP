@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import platform
 import re
 from collections.abc import Sequence
 from typing import Protocol
@@ -18,6 +19,12 @@ class Embedder(Protocol):
 def _normalize(values: Sequence[float]) -> list[float]:
     norm = math.sqrt(sum(float(v) * float(v) for v in values)) or 1.0
     return [float(v) / norm for v in values]
+
+
+def _safe_default_device() -> str | None:
+    if platform.system() == "Darwin" and platform.machine().lower() in {"arm64", "aarch64"}:
+        return "cpu"
+    return None
 
 
 class HashEmbedder:
@@ -52,6 +59,7 @@ class EmbeddingGemma2Embedder:
         dimensions: int = 256,
         batch_size: int = 2,
         max_seq_length: int = 2048,
+        device: str | None = None,
     ) -> None:
         if dimensions not in (128, 256, 512, 768):
             raise ValueError("EmbeddingGemma 2 dimensions must be 128, 256, 512, or 768")
@@ -61,6 +69,7 @@ class EmbeddingGemma2Embedder:
         self.dimensions = dimensions
         self.batch_size = batch_size
         self.max_seq_length = max_seq_length
+        self.device = device
         self._model = None
 
     def _load(self):
@@ -75,6 +84,7 @@ class EmbeddingGemma2Embedder:
                 self.model_id,
                 config_kwargs={"vision_config": None, "audio_config": None},
                 truncate_dim=self.dimensions,
+                device=self.device or _safe_default_device(),
             )
             self._model.max_seq_length = min(
                 int(getattr(self._model, "max_seq_length", self.max_seq_length)),
@@ -111,9 +121,18 @@ class EmbeddingGemma2Embedder:
         return [self._convert(row) for row in rows]
 
 
-def build_embedder(name: str, model_id: str, dimensions: int) -> Embedder:
+def build_embedder(
+    name: str,
+    model_id: str,
+    dimensions: int,
+    device: str | None = None,
+) -> Embedder:
     if name == "hash":
         return HashEmbedder(dimensions=min(dimensions, 256))
     if name == "embeddinggemma2":
-        return EmbeddingGemma2Embedder(model_id=model_id, dimensions=dimensions)
+        return EmbeddingGemma2Embedder(
+            model_id=model_id,
+            dimensions=dimensions,
+            device=device,
+        )
     raise ValueError(f"Unknown embedder: {name}")
