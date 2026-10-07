@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from code_context_mcp.chunker import CodeChunker
 from code_context_mcp.embedder import EmbeddingGemma2Embedder, HashEmbedder
 from code_context_mcp.index import CodeContextService
@@ -131,3 +133,60 @@ def test_search_results_are_capped_and_previewed(tmp_path: Path):
     assert len(results) <= 50
     assert all(len(item["content"]) <= 2000 for item in results)
     service.close()
+
+
+def test_duplicate_project_registration_does_not_orphan_index(tmp_path: Path):
+    project = tmp_path / "repo"
+    project.mkdir()
+    (project / "main.py").write_text("def hello():\n    return 1\n")
+
+    service = CodeContextService(tmp_path / "home", HashEmbedder(32))
+    service.register_project(str(project), "repo-a")
+    service.index_project("repo-a")
+
+    with pytest.raises(ValueError):
+        service.register_project(str(project), "repo-b")
+
+    assert service.get_index_status("repo-a")["chunks"] > 0
+    assert [item["project_id"] for item in service.list_projects()] == ["repo-a"]
+    service.close()
+
+
+def test_remove_project_deletes_persisted_index(tmp_path: Path):
+    project = tmp_path / "repo"
+    project.mkdir()
+    (project / "main.py").write_text("def hello():\n    return 1\n")
+
+    service = CodeContextService(tmp_path / "home", HashEmbedder(32))
+    service.register_project(str(project), "repo")
+    service.index_project("repo")
+
+    removed = service.remove_project("repo")
+
+    assert removed["removed_files"] == 1
+    assert removed["removed_chunks"] > 0
+    assert service.list_projects() == []
+    assert service.db.execute("SELECT count(*) FROM chunks").fetchone()[0] == 0
+    assert service.db.execute("SELECT count(*) FROM chunks_fts").fetchone()[0] == 0
+    service.close()
+
+
+def test_startup_cleans_orphaned_index_rows(tmp_path: Path):
+    project = tmp_path / "repo"
+    project.mkdir()
+    (project / "main.py").write_text("def hello():\n    return 1\n")
+    home = tmp_path / "home"
+
+    service = CodeContextService(home, HashEmbedder(32))
+    service.register_project(str(project), "repo")
+    service.index_project("repo")
+    with service.db:
+        service.db.execute("DELETE FROM projects WHERE project_id = ?", ("repo",))
+    assert service.db.execute("SELECT count(*) FROM chunks").fetchone()[0] > 0
+    service.close()
+
+    reopened = CodeContextService(home, HashEmbedder(32))
+    assert reopened.db.execute("SELECT count(*) FROM chunks").fetchone()[0] == 0
+    assert reopened.db.execute("SELECT count(*) FROM chunks_fts").fetchone()[0] == 0
+    assert reopened.db.execute("SELECT count(*) FROM files").fetchone()[0] == 0
+    reopened.close()
