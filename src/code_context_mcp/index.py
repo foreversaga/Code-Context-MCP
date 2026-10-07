@@ -33,6 +33,9 @@ DEFAULT_EXCLUDES = {
 
 EMBED_BATCH_CHUNKS = 8
 MAX_FILE_BYTES = 2_000_000
+MAX_RESULTS = 50
+MAX_SEARCH_POOL = 100
+SEARCH_PREVIEW_CHARS = 2_000
 
 
 def _sha256(data: bytes) -> str:
@@ -41,6 +44,10 @@ def _sha256(data: bytes) -> str:
 
 def _pack_embedding(values: list[float]) -> bytes:
     return struct.pack(f"<{len(values)}f", *values)
+
+
+def _bounded_limit(value: int, maximum: int = MAX_RESULTS) -> int:
+    return max(0, min(int(value), maximum))
 
 
 def _dot_embedding(query: list[float], stored: object) -> float:
@@ -332,8 +339,12 @@ class CodeContextService:
         contents = {
             int(row["id"]): row["content"]
             for row in self.db.execute(
-                f"SELECT id, content FROM chunks WHERE id IN ({placeholders})",
-                ids,
+                f"""
+                SELECT id, substr(content, 1, ?) AS content
+                FROM chunks
+                WHERE id IN ({placeholders})
+                """,
+                [SEARCH_PREVIEW_CHARS, *ids],
             )
         }
 
@@ -358,13 +369,15 @@ class CodeContextService:
         return " OR ".join(f'"{token.replace(chr(34), "")}"' for token in tokens[:16])
 
     def _lexical(self, project_id: str, query: str, limit: int) -> list[dict[str, Any]]:
+        limit = _bounded_limit(limit, MAX_SEARCH_POOL)
         match = self._fts_query(query)
         if not match:
             return []
         rows = self.db.execute(
             """
             SELECT
-                c.id, c.path, c.symbol, c.kind, c.start_line, c.end_line, c.content,
+                c.id, c.path, c.symbol, c.kind, c.start_line, c.end_line,
+                substr(c.content, 1, 2000) AS content,
                 bm25(chunks_fts) AS bm
             FROM chunks_fts
             JOIN chunks c ON c.id = CAST(chunks_fts.chunk_id AS INTEGER)
@@ -377,7 +390,10 @@ class CodeContextService:
         return [self._row_result(row, -float(row["bm"])) for row in rows]
 
     def search_code(self, project_id: str, query: str, limit: int = 10) -> list[dict[str, Any]]:
-        pool = max(limit * 3, 20)
+        limit = _bounded_limit(limit)
+        if limit == 0:
+            return []
+        pool = min(max(limit * 3, 20), MAX_SEARCH_POOL)
         semantic = self._semantic(project_id, query, pool)
         lexical = self._lexical(project_id, query, pool)
         combined: dict[int, dict[str, Any]] = {}
@@ -398,12 +414,14 @@ class CodeContextService:
         return ranked[:limit]
 
     def search_text(self, project_id: str, query: str, limit: int = 10) -> list[dict[str, Any]]:
-        return self._lexical(project_id, query, limit)
+        return self._lexical(project_id, query, _bounded_limit(limit))
 
     def find_symbol(self, project_id: str, symbol: str, limit: int = 20) -> list[dict[str, Any]]:
+        limit = _bounded_limit(limit)
         rows = self.db.execute(
             """
-            SELECT id, path, symbol, kind, start_line, end_line, content
+            SELECT id, path, symbol, kind, start_line, end_line,
+                   substr(content, 1, 2000) AS content
             FROM chunks
             WHERE project_id = ? AND symbol IS NOT NULL
               AND lower(symbol) LIKE lower(?)
@@ -415,10 +433,12 @@ class CodeContextService:
         return [self._row_result(row) for row in rows]
 
     def find_references(self, project_id: str, symbol: str, limit: int = 30) -> list[dict[str, Any]]:
+        limit = _bounded_limit(limit)
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", symbol):
             rows = self.db.execute(
                 """
-                SELECT c.id, c.path, c.symbol, c.kind, c.start_line, c.end_line, c.content
+                SELECT c.id, c.path, c.symbol, c.kind, c.start_line, c.end_line,
+                       substr(c.content, 1, 2000) AS content
                 FROM chunks_fts
                 JOIN chunks c ON c.id = CAST(chunks_fts.chunk_id AS INTEGER)
                 WHERE chunks_fts.project_id = ? AND chunks_fts MATCH ?
@@ -430,7 +450,8 @@ class CodeContextService:
         else:
             rows = self.db.execute(
                 """
-                SELECT id, path, symbol, kind, start_line, end_line, content
+                SELECT id, path, symbol, kind, start_line, end_line,
+                       substr(content, 1, 2000) AS content
                 FROM chunks
                 WHERE project_id = ? AND content LIKE ?
                 ORDER BY path, start_line
