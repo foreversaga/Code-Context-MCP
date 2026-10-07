@@ -54,6 +54,46 @@ The model is loaded lazily and the first indexing operation may load or download
 
 For complete setup, client configuration, indexing, multi-project usage, and troubleshooting, see [docs/USAGE.md](docs/USAGE.md).
 
+
+## Docker (GB10-safe)
+
+Docker is the recommended deployment on GB10 when host stability matters. The safe image runs embedding inference on CPU and refuses to start without a cgroup memory limit.
+
+```bash
+cp .env.example .env
+# Edit CODE_CONTEXT_PROJECTS_ROOT in .env to an absolute host path, for example:
+# CODE_CONTEXT_PROJECTS_ROOT=/home/barry/projects
+
+docker compose up -d --build
+docker compose ps
+```
+
+The default safety limits are:
+
+```text
+Memory limit:       8 GB
+Memory + swap:      8 GB total
+Memory reservation: 2 GB
+CPU limit:          4 cores
+PIDs:               256
+Shared memory:      256 MB
+Embedding device:   CPU
+GPU access:          disabled
+Root filesystem:    read-only
+MCP bind address:    127.0.0.1:7438
+```
+
+Project source is mounted read-only at the same absolute path inside the container. Existing Claude Code, Codex, and Pi MCP configuration therefore remains unchanged.
+
+Do **not** add `--gpus all` to the safe GB10 deployment. CUDA allocations on GB10 unified memory can bypass Docker memory cgroups, so the container memory limit would no longer protect the host from GPU-side memory exhaustion.
+
+The Docker entrypoint fails closed when:
+
+- no cgroup memory limit is detected
+- `CODE_CONTEXT_DEVICE` is not `cpu`
+
+An explicit `CODE_CONTEXT_ALLOW_UNBOUNDED=1` override exists for development, but disables these protections.
+
 ## MCP clients
 
 ### Claude Code
