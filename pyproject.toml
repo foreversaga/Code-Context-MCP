@@ -11,7 +11,9 @@ requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "foreversaga" }]
 dependencies = [
+  "faiss-cpu>=1.15.1,<2",
   "mcp[cli]>=2.2.0,<3",
+  "numpy>=1.26,<3",
   "tree-sitter>=0.25.2,<0.26",
   "tree-sitter-language-pack>=1.20,<2"
 ]
