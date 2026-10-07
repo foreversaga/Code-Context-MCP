@@ -44,6 +44,8 @@ MAX_FILE_BYTES = 2_000_000
 MAX_RESULTS = 50
 MAX_SEARCH_POOL = 100
 SEARCH_PREVIEW_CHARS = 2_000
+MAX_QUERY_CHARS = 8_000
+MAX_SYMBOL_CHARS = 512
 
 
 def _sha256(data: bytes) -> str:
@@ -56,6 +58,10 @@ def _pack_embedding(values: list[float]) -> bytes:
 
 def _bounded_limit(value: int, maximum: int = MAX_RESULTS) -> int:
     return max(0, min(int(value), maximum))
+
+
+def _bounded_text(value: str, maximum: int) -> str:
+    return value[:maximum]
 
 
 def _dot_embedding(query: list[float], stored: object) -> float:
@@ -398,6 +404,7 @@ class CodeContextService:
         return [self._row_result(row, -float(row["bm"])) for row in rows]
 
     def search_code(self, project_id: str, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        query = _bounded_text(query, MAX_QUERY_CHARS)
         limit = _bounded_limit(limit)
         if limit == 0:
             return []
@@ -422,9 +429,11 @@ class CodeContextService:
         return ranked[:limit]
 
     def search_text(self, project_id: str, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        query = _bounded_text(query, MAX_QUERY_CHARS)
         return self._lexical(project_id, query, _bounded_limit(limit))
 
     def find_symbol(self, project_id: str, symbol: str, limit: int = 20) -> list[dict[str, Any]]:
+        symbol = _bounded_text(symbol, MAX_SYMBOL_CHARS)
         limit = _bounded_limit(limit)
         rows = self.db.execute(
             """
@@ -441,6 +450,7 @@ class CodeContextService:
         return [self._row_result(row) for row in rows]
 
     def find_references(self, project_id: str, symbol: str, limit: int = 30) -> list[dict[str, Any]]:
+        symbol = _bounded_text(symbol, MAX_SYMBOL_CHARS)
         limit = _bounded_limit(limit)
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", symbol):
             rows = self.db.execute(
