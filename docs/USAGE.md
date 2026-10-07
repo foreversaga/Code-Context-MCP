@@ -421,7 +421,24 @@ Codex --------+--> Streamable HTTP --> Code Context MCP
 Pi -----------+                         |
                                         +-- Tree-sitter AST chunks
                                         +-- EmbeddingGemma 2
-                                        +-- SQLite FTS5
+                                        +-- FAISS semantic index
+                                        +-- SQLite metadata + FTS5
                                         +-- symbol/reference index
                                         +-- incremental multi-project index
 ```
+
+
+## 13. Memory behavior
+
+Code Context MCP keeps semantic retrieval bounded for large repositories:
+
+- FAISS performs vector top-k search instead of loading/scanning all embeddings in Python.
+- Only one project's FAISS index is resident in the daemon at a time.
+- Embeddings are persisted as compact float32 BLOBs in SQLite so a FAISS cache can be rebuilt without re-embedding source code.
+- FAISS cache files include a SQLite vector revision. If indexing is interrupted and revisions differ, the cache is rebuilt by streaming persisted embeddings.
+- Repository file discovery uses a disk-backed SQLite TEMP table instead of retaining all paths/hashes in Python sets.
+- Files over 2 MB and generated dependency/build directories are excluded from indexing.
+- Embedding inference uses small batches and a 2048-token maximum sequence length.
+- Search results are capped at 50 results and 2,000-character previews. Use `get_chunk` when full indexed content is needed.
+
+At 256 dimensions, an exact float32 FAISS index uses roughly 1 KB per indexed chunk, excluding small FAISS metadata overhead. Switching between projects unloads the previous in-memory index.
