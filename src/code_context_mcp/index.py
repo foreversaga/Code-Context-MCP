@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import heapq
 import json
+import os
 import re
 import sqlite3
 import struct
@@ -30,7 +31,8 @@ DEFAULT_EXCLUDES = {
     "coverage",
 }
 
-EMBED_BATCH_CHUNKS = 16
+EMBED_BATCH_CHUNKS = 8
+MAX_FILE_BYTES = 2_000_000
 
 
 def _sha256(data: bytes) -> str:
@@ -70,6 +72,9 @@ class CodeContextService:
         self.db.executescript(
             """
             PRAGMA journal_mode=WAL;
+            PRAGMA cache_size=-32768;
+            PRAGMA temp_store=FILE;
+            PRAGMA wal_autocheckpoint=1000;
             CREATE TABLE IF NOT EXISTS projects (
                 project_id TEXT PRIMARY KEY,
                 root_path TEXT NOT NULL UNIQUE
@@ -137,32 +142,33 @@ class CodeContextService:
         return Path(row["root_path"])
 
     def _iter_files(self, root: Path):
-        for path in root.rglob("*"):
-            if not path.is_file():
-                continue
-            try:
-                relative = path.relative_to(root)
-            except ValueError:
-                continue
-            if any(part in DEFAULT_EXCLUDES for part in relative.parts):
-                continue
-            if self.chunker.supports(path):
-                yield path, relative.as_posix()
+        for dirpath, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
+            dirnames[:] = [name for name in dirnames if name not in DEFAULT_EXCLUDES]
+            directory = Path(dirpath)
+            for filename in filenames:
+                path = directory / filename
+                if not self.chunker.supports(path):
+                    continue
+                try:
+                    if path.stat().st_size > MAX_FILE_BYTES:
+                        continue
+                    relative = path.relative_to(root).as_posix()
+                except (OSError, ValueError):
+                    continue
+                yield path, relative
 
     def _delete_file_chunks(self, project_id: str, relative_path: str) -> None:
-        ids = [
-            row["id"]
-            for row in self.db.execute(
-                "SELECT id FROM chunks WHERE project_id = ? AND path = ?",
-                (project_id, relative_path),
+        self.db.execute(
+            """
+            DELETE FROM chunks_fts
+            WHERE chunk_id IN (
+                SELECT CAST(id AS TEXT)
+                FROM chunks
+                WHERE project_id = ? AND path = ?
             )
-        ]
-        if ids:
-            placeholders = ",".join("?" for _ in ids)
-            self.db.execute(
-                f"DELETE FROM chunks_fts WHERE chunk_id IN ({placeholders})",
-                [str(i) for i in ids],
-            )
+            """,
+            (project_id, relative_path),
+        )
         self.db.execute(
             "DELETE FROM chunks WHERE project_id = ? AND path = ?",
             (project_id, relative_path),
@@ -180,60 +186,71 @@ class CodeContextService:
         indexed_files = 0
         indexed_chunks = 0
 
-        with self.db:
-            for path, relative_path in self._iter_files(root):
-                current.add(relative_path)
+        for path, relative_path in self._iter_files(root):
+            current.add(relative_path)
+            try:
                 raw = path.read_bytes()
-                digest = _sha256(raw)
-                if not force and known.get(relative_path) == digest:
-                    continue
+            except OSError:
+                continue
+            if len(raw) > MAX_FILE_BYTES:
+                continue
 
-                content = raw.decode("utf-8", errors="ignore")
-                chunks = self.chunker.chunk(relative_path, content)
+            digest = _sha256(raw)
+            if not force and known.get(relative_path) == digest:
+                continue
 
+            content = raw.decode("utf-8", errors="ignore")
+            chunks = self.chunker.chunk(relative_path, content)
+
+            # Compute embeddings before touching the existing index. If model inference
+            # fails, the previous index for this file remains usable.
+            encoded: list[tuple[object, list[float]]] = []
+            for start in range(0, len(chunks), EMBED_BATCH_CHUNKS):
+                chunk_batch = chunks[start : start + EMBED_BATCH_CHUNKS]
+                embeddings = self.embedder.embed_documents(
+                    [
+                        (f"{relative_path}::{chunk.symbol or chunk.kind}", chunk.content)
+                        for chunk in chunk_batch
+                    ]
+                )
+                encoded.extend(zip(chunk_batch, embeddings, strict=True))
+
+            # Keep transactions file-scoped so large rebuilds do not grow one huge WAL.
+            with self.db:
                 self._delete_file_chunks(project_id, relative_path)
-                for start in range(0, len(chunks), EMBED_BATCH_CHUNKS):
-                    chunk_batch = chunks[start : start + EMBED_BATCH_CHUNKS]
-                    embeddings = self.embedder.embed_documents(
-                        [
-                            (f"{relative_path}::{chunk.symbol or chunk.kind}", chunk.content)
-                            for chunk in chunk_batch
-                        ]
+                for chunk, embedding in encoded:
+                    cur = self.db.execute(
+                        """
+                        INSERT INTO chunks(
+                            project_id, path, symbol, kind, start_line, end_line,
+                            content, embedding
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            project_id,
+                            chunk.path,
+                            chunk.symbol,
+                            chunk.kind,
+                            chunk.start_line,
+                            chunk.end_line,
+                            chunk.content,
+                            sqlite3.Binary(_pack_embedding(embedding)),
+                        ),
                     )
-                    for chunk, embedding in zip(chunk_batch, embeddings, strict=True):
-                        cur = self.db.execute(
-                            """
-                            INSERT INTO chunks(
-                                project_id, path, symbol, kind, start_line, end_line,
-                                content, embedding
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (
-                                project_id,
-                                chunk.path,
-                                chunk.symbol,
-                                chunk.kind,
-                                chunk.start_line,
-                                chunk.end_line,
-                                chunk.content,
-                                sqlite3.Binary(_pack_embedding(embedding)),
-                            ),
-                        )
-                        chunk_id = cur.lastrowid
-                        self.db.execute(
-                            """
-                            INSERT INTO chunks_fts(chunk_id, project_id, path, symbol, content)
-                            VALUES (?, ?, ?, ?, ?)
-                            """,
-                            (
-                                str(chunk_id),
-                                project_id,
-                                chunk.path,
-                                chunk.symbol or "",
-                                chunk.content,
-                            ),
-                        )
-
+                    chunk_id = cur.lastrowid
+                    self.db.execute(
+                        """
+                        INSERT INTO chunks_fts(chunk_id, project_id, path, symbol, content)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(chunk_id),
+                            project_id,
+                            chunk.path,
+                            chunk.symbol or "",
+                            chunk.content,
+                        ),
+                    )
                 self.db.execute(
                     """
                     INSERT INTO files(project_id, path, sha256) VALUES (?, ?, ?)
@@ -241,20 +258,26 @@ class CodeContextService:
                     """,
                     (project_id, relative_path, digest),
                 )
-                indexed_files += 1
-                indexed_chunks += len(chunks)
 
-            for missing in set(known) - current:
+            indexed_files += 1
+            indexed_chunks += len(chunks)
+
+        missing_files = set(known) - current
+        for missing in missing_files:
+            with self.db:
                 self._delete_file_chunks(project_id, missing)
                 self.db.execute(
                     "DELETE FROM files WHERE project_id = ? AND path = ?",
                     (project_id, missing),
                 )
 
+        # Keep the WAL bounded after a large indexing pass.
+        self.db.execute("PRAGMA wal_checkpoint(PASSIVE)")
+
         return {
             "indexed_files": indexed_files,
             "indexed_chunks": indexed_chunks,
-            "removed_files": len(set(known) - current),
+            "removed_files": len(missing_files),
         }
 
     def _row_result(self, row: sqlite3.Row, score: float = 0.0) -> dict[str, Any]:
