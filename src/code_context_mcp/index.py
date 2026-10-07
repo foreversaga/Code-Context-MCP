@@ -415,16 +415,29 @@ class CodeContextService:
         return [self._row_result(row) for row in rows]
 
     def find_references(self, project_id: str, symbol: str, limit: int = 30) -> list[dict[str, Any]]:
-        rows = self.db.execute(
-            """
-            SELECT id, path, symbol, kind, start_line, end_line, content
-            FROM chunks
-            WHERE project_id = ? AND lower(content) LIKE lower(?)
-            ORDER BY path, start_line
-            LIMIT ?
-            """,
-            (project_id, f"%{symbol}%", limit),
-        ).fetchall()
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", symbol):
+            rows = self.db.execute(
+                """
+                SELECT c.id, c.path, c.symbol, c.kind, c.start_line, c.end_line, c.content
+                FROM chunks_fts
+                JOIN chunks c ON c.id = CAST(chunks_fts.chunk_id AS INTEGER)
+                WHERE chunks_fts.project_id = ? AND chunks_fts MATCH ?
+                ORDER BY c.path, c.start_line
+                LIMIT ?
+                """,
+                (project_id, f'"{symbol}"', limit),
+            ).fetchall()
+        else:
+            rows = self.db.execute(
+                """
+                SELECT id, path, symbol, kind, start_line, end_line, content
+                FROM chunks
+                WHERE project_id = ? AND content LIKE ?
+                ORDER BY path, start_line
+                LIMIT ?
+                """,
+                (project_id, f"%{symbol}%", limit),
+            ).fetchall()
         return [self._row_result(row) for row in rows]
 
     def get_chunk(self, chunk_id: int) -> dict[str, Any]:
