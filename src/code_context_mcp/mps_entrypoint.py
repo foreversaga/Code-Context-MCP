@@ -23,9 +23,10 @@ def _wait_for_mps_gate() -> None:
             "scripts/start-mps-v3.sh so the device-memory hard limit is applied first."
         )
 
-    pipe_dir = Path(os.getenv("CUDA_MPS_PIPE_DIRECTORY", ""))
-    if not pipe_dir:
+    pipe_value = os.getenv("CUDA_MPS_PIPE_DIRECTORY", "")
+    if not pipe_value:
         raise SystemExit("CUDA_MPS_PIPE_DIRECTORY is required for the MPS v3 runtime.")
+    pipe_dir = Path(pipe_value)
 
     control_socket = pipe_dir / "control"
     deadline = time.monotonic() + int(os.getenv("CODE_CONTEXT_MPS_GATE_TIMEOUT", "120"))
