@@ -9,3 +9,6 @@ build/
 .coverage
 htmlcov/
 .code-context/
+
+.env
+.env.mps
