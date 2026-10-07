@@ -39,4 +39,4 @@ EXPOSE 7438
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
   CMD python -c "import os,socket; s=socket.create_connection(('127.0.0.1',int(os.environ.get('CODE_CONTEXT_PORT','7438'))),2); s.close()" || exit 1
 
-CMD ["code-context-mcp"]
+CMD ["python", "-m", "code_context_mcp.docker_entrypoint"]
