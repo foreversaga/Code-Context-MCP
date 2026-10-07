@@ -28,7 +28,15 @@ DEFAULT_EXCLUDES = {
     "vendor",
     ".next",
     ".cache",
+    ".gradle",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
+    ".nox",
+    "__pycache__",
     "coverage",
+    "out",
 }
 
 EMBED_BATCH_CHUNKS = 8
