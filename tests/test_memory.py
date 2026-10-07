@@ -76,7 +76,7 @@ class _FakeModel:
         return [[1.0, 0.0, 0.0, 0.0] for _ in payload]
 
 
-def test_embeddinggemma_uses_small_batches():
+def test_embeddinggemma_uses_small_batches_and_truncation():
     embedder = EmbeddingGemma2Embedder(dimensions=128, batch_size=4)
     fake = _FakeModel()
     embedder._model = fake
@@ -84,3 +84,33 @@ def test_embeddinggemma_uses_small_batches():
     embedder.embed_documents([("a.py", "def a(): pass"), ("b.py", "def b(): pass")])
 
     assert fake.calls[0][1]["batch_size"] == 4
+    assert fake.calls[0][1]["truncate_dim"] == 128
+
+
+def test_repository_scan_prunes_excludes_and_large_files(tmp_path: Path):
+    project = tmp_path / "repo"
+    project.mkdir()
+    (project / "main.py").write_text("def keep_me():\n    return 1\n")
+
+    node_modules = project / "node_modules"
+    node_modules.mkdir()
+    (node_modules / "ignored.py").write_text("def should_not_be_seen():\n    pass\n")
+
+    (project / "huge.py").write_text("x = 1\n" * 400_000)
+
+    service = CodeContextService(tmp_path / "home", HashEmbedder(32))
+    service.register_project(str(project), "repo")
+    service.index_project("repo")
+
+    status = service.get_index_status("repo")
+    assert status["files"] == 1
+    assert service.find_symbol("repo", "should_not_be_seen") == []
+    service.close()
+
+
+def test_sqlite_memory_pragmas_are_bounded(tmp_path: Path):
+    service = CodeContextService(tmp_path / "home", HashEmbedder(32))
+
+    assert service.db.execute("PRAGMA temp_store").fetchone()[0] == 1
+    assert service.db.execute("PRAGMA cache_size").fetchone()[0] == -32768
+    service.close()
