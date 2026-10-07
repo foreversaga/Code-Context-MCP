@@ -24,7 +24,12 @@ def get_service() -> CodeContextService:
         settings = Settings.from_env()
         _service = CodeContextService(
             settings.home,
-            build_embedder(settings.embedder, settings.model_id, settings.dimensions),
+            build_embedder(
+                settings.embedder,
+                settings.model_id,
+                settings.dimensions,
+                settings.device,
+            ),
         )
     return _service
 
