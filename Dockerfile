@@ -24,6 +24,7 @@ COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
 
 RUN if [ "$INSTALL_EMBEDDING" = "1" ]; then \
+        pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu; \
         pip install --no-cache-dir ".[embedding]"; \
     else \
         pip install --no-cache-dir "."; \
